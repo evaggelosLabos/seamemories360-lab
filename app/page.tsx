@@ -20,6 +20,15 @@ export default function Home() {
   const [cutting, setCutting] = useState(false);
   const [clipUrl, setClipUrl] = useState<string | null>(null);
 
+  const [uploadProgress, setUploadProgress] = useState(0);
+
+const [uploadStage, setUploadStage] =
+  useState<
+    "idle" |
+    "uploading" |
+    "processing"
+  >("idle");
+
   function goToFrame(index: number) {
     if (!frames.length) return;
 
@@ -58,7 +67,17 @@ export default function Home() {
   async function uploadVideo() {
   if (!video) return;
 
+  const CHUNK_SIZE =
+    25 * 1024 * 1024;
+
+  const totalChunks = Math.ceil(
+    video.size / CHUNK_SIZE
+  );
+
   setLoading(true);
+  setUploadStage("uploading");
+  setUploadProgress(0);
+
   setClipUrl(null);
   setStart(null);
   setEnd(null);
@@ -67,33 +86,209 @@ export default function Home() {
   setSelectedIndex(0);
 
   try {
-    const res = await fetch("/api/upload", {
-      method: "POST",
-      headers: {
-        "Content-Type": "video/mp4",
-        "X-Filename": encodeURIComponent(video.name),
-      },
-      body: video,
-    });
+    /*
+     * STEP 1
+     * Create resumable upload session.
+     */
+    const initRes = await fetch(
+      "/api/upload/init",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
+        body: JSON.stringify({
+          filename: video.name,
+          totalChunks,
+          fileSize: video.size,
+        }),
+      }
+    );
 
-    const data = await res.json();
+    const initData =
+      await initRes.json();
 
-    if (!res.ok) {
-      alert(data.error || "Upload failed");
-      return;
+    if (!initRes.ok) {
+      throw new Error(
+        initData.error ||
+          "Could not initialize upload"
+      );
     }
 
-    setProjectId(data.projectId);
-    setFrames(data.frames);
-    setSelectedFrame(data.frames[0] || null);
+    const newProjectId =
+      initData.projectId;
+
+    /*
+     * STEP 2
+     * Send each 25 MB piece.
+     */
+    for (
+      let chunkIndex = 0;
+      chunkIndex < totalChunks;
+      chunkIndex++
+    ) {
+      const startByte =
+        chunkIndex * CHUNK_SIZE;
+
+      const endByte = Math.min(
+        startByte + CHUNK_SIZE,
+        video.size
+      );
+
+      const chunk = video.slice(
+        startByte,
+        endByte
+      );
+
+      let uploaded = false;
+
+      /*
+       * Retry each failed piece
+       * up to 5 times.
+       */
+      for (
+        let attempt = 1;
+        attempt <= 5;
+        attempt++
+      ) {
+        try {
+          const chunkRes =
+            await fetch(
+              "/api/upload/chunk",
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type":
+                    "application/octet-stream",
+
+                  "X-Project-Id":
+                    newProjectId,
+
+                  "X-Chunk-Index":
+                    String(
+                      chunkIndex
+                    ),
+                },
+
+                body: chunk,
+              }
+            );
+
+          if (!chunkRes.ok) {
+            throw new Error(
+              `Chunk ${chunkIndex} failed`
+            );
+          }
+
+          uploaded = true;
+
+          break;
+        } catch (error) {
+          console.error(
+            `Chunk ${chunkIndex} attempt ${attempt} failed`,
+            error
+          );
+
+          if (attempt < 5) {
+            await new Promise(
+              (resolve) =>
+                setTimeout(
+                  resolve,
+                  1500 * attempt
+                )
+            );
+          }
+        }
+      }
+
+      if (!uploaded) {
+        throw new Error(
+          `Could not upload chunk ${chunkIndex + 1}`
+        );
+      }
+
+      const uploadedBytes =
+        Math.min(
+          (chunkIndex + 1) *
+            CHUNK_SIZE,
+          video.size
+        );
+
+      const percentage =
+        Math.round(
+          (uploadedBytes /
+            video.size) *
+            100
+        );
+
+      setUploadProgress(
+        percentage
+      );
+    }
+
+    /*
+     * STEP 3
+     * All chunks reached server.
+     * Assemble file + run FFmpeg.
+     */
+    setUploadProgress(100);
+    setUploadStage("processing");
+
+    const finalizeRes =
+      await fetch(
+        "/api/upload/finalize",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+
+          body: JSON.stringify({
+            projectId:
+              newProjectId,
+          }),
+        }
+      );
+
+    const data =
+      await finalizeRes.json();
+
+    if (!finalizeRes.ok) {
+      throw new Error(
+        data.error ||
+          "Finalization failed"
+      );
+    }
+
+    setProjectId(
+      data.projectId
+    );
+
+    setFrames(
+      data.frames
+    );
+
+    setSelectedFrame(
+      data.frames[0] || null
+    );
+
     setSelectedIndex(0);
   } catch (error) {
     console.error(error);
-    alert("Upload failed");
+
+    alert(
+      error instanceof Error
+        ? error.message
+        : "Upload failed"
+    );
   } finally {
     setLoading(false);
+    setUploadStage("idle");
   }
 }
+ 
 
   function selectFrame(frame: Frame, index: number) {
     setSelectedFrame(frame);
@@ -180,8 +375,28 @@ export default function Home() {
             disabled={!video || loading}
             className="mt-5 rounded-xl bg-cyan-500 px-5 py-3 text-black font-semibold disabled:opacity-40"
           >
-            {loading ? "Extracting frames..." : "Upload & Extract Frames"}
+            {uploadStage === "uploading"
+  ? `Uploading ${uploadProgress}%`
+  : uploadStage === "processing"
+  ? "Preparing video & extracting frames..."
+  : "Upload & Extract Frames"}
           </button>
+          {uploadStage === "uploading" && (
+  <div className="mt-4">
+    <div className="h-3 w-full rounded-full bg-neutral-800 overflow-hidden">
+      <div
+        className="h-full bg-cyan-500 transition-all duration-300"
+        style={{
+          width: `${uploadProgress}%`,
+        }}
+      />
+    </div>
+
+    <p className="mt-2 text-sm text-neutral-400">
+      {uploadProgress}% uploaded
+    </p>
+  </div>
+)}
         </section>
 
         {selectedFrame && (
