@@ -56,29 +56,30 @@ export default function Home() {
   }, [frames, selectedIndex]);
 
   async function uploadVideo() {
-    if (!video) return;
+  if (!video) return;
 
-    setLoading(true);
-    setClipUrl(null);
-    setStart(null);
-    setEnd(null);
-    setFrames([]);
-    setSelectedFrame(null);
-    setSelectedIndex(0);
+  setLoading(true);
+  setClipUrl(null);
+  setStart(null);
+  setEnd(null);
+  setFrames([]);
+  setSelectedFrame(null);
+  setSelectedIndex(0);
 
-    const formData = new FormData();
-    formData.append("video", video);
-
+  try {
     const res = await fetch("/api/upload", {
       method: "POST",
-      body: formData,
+      headers: {
+        "Content-Type": "video/mp4",
+        "X-Filename": encodeURIComponent(video.name),
+      },
+      body: video,
     });
 
     const data = await res.json();
 
     if (!res.ok) {
       alert(data.error || "Upload failed");
-      setLoading(false);
       return;
     }
 
@@ -86,8 +87,13 @@ export default function Home() {
     setFrames(data.frames);
     setSelectedFrame(data.frames[0] || null);
     setSelectedIndex(0);
+  } catch (error) {
+    console.error(error);
+    alert("Upload failed");
+  } finally {
     setLoading(false);
   }
+}
 
   function selectFrame(frame: Frame, index: number) {
     setSelectedFrame(frame);
