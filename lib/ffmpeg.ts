@@ -1,21 +1,13 @@
 import ffmpeg from "fluent-ffmpeg";
-import path from "path";
-import fs from "fs";
+import ffmpegStatic from "ffmpeg-static";
 
 export const FRAME_FPS = 2;
 
-const localFfmpegPath = path.join(
-  process.cwd(),
-  "node_modules",
-  "ffmpeg-static",
-  "ffmpeg.exe"
-);
-
-if (fs.existsSync(localFfmpegPath)) {
-  ffmpeg.setFfmpegPath(localFfmpegPath);
-} else {
-  console.error("FFmpeg not found at:", localFfmpegPath);
+if (!ffmpegStatic) {
+  throw new Error("FFmpeg binary not found");
 }
+
+ffmpeg.setFfmpegPath(ffmpegStatic);
 
 export function extractFrames(inputPath: string, outputPattern: string) {
   return new Promise<void>((resolve, reject) => {
